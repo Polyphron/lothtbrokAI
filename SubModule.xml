@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Module xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <Name value="LothbrokAI" />
+    <Id value="LothbrokAI" />
+    <Version value="v0.1.0" />
+    <Official value="false" />
+    <DefaultModule value="false" />
+    <SingleplayerModule value="true" />
+    <MultiplayerModule value="false" />
+    <ModuleCategory value="Singleplayer" />
+    <DependedModules>
+        <DependedModule Id="Bannerlord.Harmony" />
+        <DependedModule Id="Bannerlord.UIExtenderEx" DependentVersion="v2.11.0" />
+        <DependedModule Id="Native" />
+        <DependedModule Id="SandBoxCore" />
+        <DependedModule Id="Sandbox" />
+        <DependedModule Id="StoryMode" />
+        <DependedModule Id="CustomBattle" />
+    </DependedModules>
+    <DependedModuleMetadatas>
+        <DependedModuleMetadata id="Bannerlord.Harmony" order="LoadBeforeThis" />
+        <DependedModuleMetadata id="Bannerlord.UIExtenderEx" order="LoadBeforeThis" version="v2.11.0" />
+        <DependedModuleMetadata id="Native" order="LoadBeforeThis" />
+        <DependedModuleMetadata id="SandBoxCore" order="LoadBeforeThis" />
+        <DependedModuleMetadata id="Sandbox" order="LoadBeforeThis" />
+        <DependedModuleMetadata id="StoryMode" order="LoadBeforeThis" />
+        <DependedModuleMetadata id="CustomBattle" order="LoadBeforeThis" />
+        <!-- DESIGN: No dependency on AIInfluence — we are standalone -->
+    </DependedModuleMetadatas>
+    <SubModules>
+        <SubModule>
+            <Name value="LothbrokAI" />
+            <DLLName value="LothbrokAI.dll" />
+            <SubModuleClassType value="LothbrokAI.LothbrokSubModule" />
+        </SubModule>
+    </SubModules>
+    <Xmls>
+    </Xmls>
+</Module>

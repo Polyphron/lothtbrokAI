@@ -1,0 +1,23 @@
+{
+  "backend": "openrouter",
+  "openrouter_api_key": "sk-or-v1-YOUR_KEY_HERE",
+  "openrouter_model": "x-ai/grok-4.1-fast",
+  "deepseek_api_key": "",
+  "deepseek_model": "deepseek-chat",
+  "local_api_url": "http://localhost:11434",
+  "local_model": "llama3",
+  "koboldcpp_url": "http://localhost:5001",
+  "embedding_backend": "none",
+  "embedding_model": "nomic-embed-text",
+  "embedding_url": "http://192.168.1.100:1234",
+  "temperature": 0.8,
+  "max_response_tokens": 800,
+  "max_prompt_tokens": 4000,
+  "timeout_seconds": 30,
+  "memory_top_k": 5,
+  "recent_messages_count": 4,
+  "summary_trigger_count": 10,
+  "max_embeddings_per_npc": 500,
+  "log_prompts": true,
+  "debug_mode": true
+}
