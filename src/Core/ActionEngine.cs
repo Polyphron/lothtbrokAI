@@ -36,6 +36,7 @@ namespace LothbrokAI.Core
         {
             { "relation_change", new RelationChangeHandler() },
             { "give_gold", new GiveGoldHandler() },
+            { "take_gold", new TakeGoldHandler() },
             { "give_item", new GiveItemHandler() },
             { "create_rp_item", new CreateRPItemHandler() },
             { "start_quest", new StartQuestHandler() },
@@ -212,9 +213,9 @@ namespace LothbrokAI.Core
     /// </summary>
     public class RelationChangeHandler : ActionHandler
     {
-        // DESIGN: Max relation change per conversation = ±10
-        // Prevents LLM from saying "I love you now" and setting +100
-        private const int MAX_CHANGE = 10;
+        // DESIGN: Max relation change per conversation
+        // Increased from 10 to 30 so extreme emotions properly trigger friend/enemy threshold in Encyclopedia
+        private const int MAX_CHANGE = 30;
 
         public override string Validate(NpcAction action, Hero npc, Hero player)
         {
@@ -234,7 +235,7 @@ namespace LothbrokAI.Core
     }
 
     /// <summary>
-    /// NPC gives gold to player (or vice versa).
+    /// NPC gives gold to player (or player takes gold).
     /// Validated against actual gold holdings.
     /// </summary>
     public class GiveGoldHandler : ActionHandler
@@ -244,11 +245,11 @@ namespace LothbrokAI.Core
             var gateCheck = CheckRelationGate(npc, player, "give_gold");
             if (gateCheck != null) return gateCheck;
 
-            int amount = action.GoldAmount;
+            int amount = action.GoldAmount > 0 ? action.GoldAmount : (int)action.Value;
             if (amount <= 0) return "Gold amount must be positive";
 
             // Check who's giving
-            if (amount > 0 && npc.Gold < amount)
+            if (npc.Gold < amount)
                 return "NPC doesn't have enough gold (has " + npc.Gold + ")";
 
             return null;
@@ -256,10 +257,35 @@ namespace LothbrokAI.Core
 
         public override void Execute(NpcAction action, Hero npc, Hero player)
         {
-            int amount = action.GoldAmount;
-            GiveGoldAction.ApplyBetweenCharacters(npc, player, amount);
+            int amount = action.GoldAmount > 0 ? action.GoldAmount : (int)action.Value;
+            GiveGoldAction.ApplyBetweenCharacters(npc, player, amount, false);
             LothbrokSubModule.Log(string.Format(
                 "{0} gave {1} gold to {2}", npc.Name, amount, player.Name));
+        }
+    }
+
+    /// <summary>
+    /// Player gives gold to NPC (like a bribe or gift).
+    /// </summary>
+    public class TakeGoldHandler : ActionHandler
+    {
+        public override string Validate(NpcAction action, Hero npc, Hero player)
+        {
+            int amount = action.GoldAmount > 0 ? action.GoldAmount : (int)action.Value;
+            if (amount <= 0) return "Gold amount must be positive";
+
+            if (player.Gold < amount)
+                return "Player doesn't have enough gold (has " + player.Gold + ")";
+
+            return null; // Taking gold is always valid if player can pay
+        }
+
+        public override void Execute(NpcAction action, Hero npc, Hero player)
+        {
+            int amount = action.GoldAmount > 0 ? action.GoldAmount : (int)action.Value;
+            GiveGoldAction.ApplyBetweenCharacters(player, npc, amount, false);
+            LothbrokSubModule.Log(string.Format(
+                "{0} gave {1} gold to {2}", player.Name, amount, npc.Name));
         }
     }
 

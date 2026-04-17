@@ -41,9 +41,26 @@ namespace LothbrokAI
             _harmony = new Harmony(MOD_ID);
 
             // Determine mod directory
-            _modDir = System.IO.Path.GetDirectoryName(
-                System.IO.Path.GetDirectoryName(
-                    typeof(LothbrokSubModule).Assembly.Location));
+            // DLL lives at: Modules/LothbrokAI/bin/Win64_Shipping_Client/LothbrokAI.dll
+            // We need 3 levels up to reach: Modules/LothbrokAI/
+            try
+            {
+                string asmDir = typeof(LothbrokSubModule).Assembly.Location;
+                _modDir = System.IO.Path.GetDirectoryName(       // bin/Win64_Shipping_Client/
+                    System.IO.Path.GetDirectoryName(              // bin/
+                        System.IO.Path.GetDirectoryName(asmDir)));// LothbrokAI/
+            }
+            catch { }
+
+            // Validate: the real mod root has data/config.json
+            if (string.IsNullOrEmpty(_modDir) 
+                || !System.IO.File.Exists(System.IO.Path.Combine(_modDir, "data", "config.json")))
+            {
+                _modDir = @"C:\Steam\steamapps\common\Mount & Blade II Bannerlord\Modules\LothbrokAI";
+            }
+
+            // Ensure logs directory exists immediately
+            try { System.IO.Directory.CreateDirectory(System.IO.Path.Combine(_modDir, "logs")); } catch { }
 
             Log("LothbrokAI v" + MOD_VERSION + " loading...", Debug.DebugColor.Cyan);
             Log("Mod directory: " + _modDir);

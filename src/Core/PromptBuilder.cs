@@ -241,12 +241,17 @@ namespace LothbrokAI.Core
             // Dynamic Action List (Phase 8.1)
             var actionBuilder = new StringBuilder();
             actionBuilder.AppendLine("\n[AVAILABLE GAME ACTIONS]");
-            actionBuilder.AppendLine("You can call the 'execute_game_action' tool with these action_type strings:");
-            actionBuilder.AppendLine("- relation_change");
-            actionBuilder.AppendLine("- give_gold");
-            actionBuilder.AppendLine("- give_item");
-            actionBuilder.AppendLine("- create_rp_item");
-            actionBuilder.AppendLine("- trust_change");
+            actionBuilder.AppendLine("To trigger game effects, you MUST append this exact block to the end of your message:");
+            actionBuilder.AppendLine("[ACTIONS]");
+            actionBuilder.AppendLine("{\"actions\": [{\"type\": \"<action_type>\", \"value\": 10}]}");
+            actionBuilder.AppendLine("");
+            actionBuilder.AppendLine("Valid <action_type> strings:");
+            actionBuilder.AppendLine("- relation_change (requires \"value\" from -100 to 100)");
+            actionBuilder.AppendLine("- give_gold (requires \"value\" as amount of gold NPC gives TO player)");
+            actionBuilder.AppendLine("- take_gold (requires \"value\" as amount of gold player gives TO NPC)");
+            actionBuilder.AppendLine("- give_item (requires \"item_name\")");
+            actionBuilder.AppendLine("- create_rp_item (requires \"item_name\")");
+            actionBuilder.AppendLine("- trust_change (requires \"value\" from -100 to 100)");
             actionBuilder.AppendLine("- modify_reputation");
             
             // Medici Handlers
@@ -258,14 +263,14 @@ namespace LothbrokAI.Core
                 if (npc.Clan?.Kingdom != null && npc.Clan.Kingdom.Leader == npc)
                 {
                     // Ruler Actions
-                    actionBuilder.AppendLine("- declare_war (requires target)");
-                    actionBuilder.AppendLine("- propose_peace (requires target)");
+                    actionBuilder.AppendLine("- declare_war (requires \"target\" kingdom name)");
+                    actionBuilder.AppendLine("- propose_peace (requires \"target\" kingdom name)");
                     actionBuilder.AppendLine("- propose_alliance");
                     actionBuilder.AppendLine("- break_alliance");
                 }
                 if (npc.Clan != null && npc.Clan.Settlements.Count > 0)
                 {
-                    actionBuilder.AppendLine("- transfer_fief (requires settlement_id)");
+                    actionBuilder.AppendLine("- transfer_fief (requires \"settlement_id\")");
                 }
             }
 

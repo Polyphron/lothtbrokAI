@@ -205,13 +205,14 @@ namespace LothbrokAI.Core
             }
 
             // DEEP LAYER: Native Friends and Enemies
+            // PERF: Only scan Lords to avoid O(N^2) on 10k+ heroes
             var friends = TaleWorlds.CampaignSystem.Campaign.Current.AliveHeroes
-                .Where(h => h != npc && h.GetRelation(npc) >= 30)
+                .Where(h => h != npc && h.IsLord && h.Age >= 18 && h.GetRelation(npc) >= 30)
                 .OrderByDescending(h => h.GetRelation(npc))
                 .Take(2).ToList();
 
             var enemies = TaleWorlds.CampaignSystem.Campaign.Current.AliveHeroes
-                .Where(h => h != npc && h.GetRelation(npc) <= -30)
+                .Where(h => h != npc && h.IsLord && h.Age >= 18 && h.GetRelation(npc) <= -30)
                 .OrderBy(h => h.GetRelation(npc))
                 .Take(2).ToList();
 

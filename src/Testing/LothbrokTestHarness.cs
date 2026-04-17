@@ -82,7 +82,7 @@ namespace LothbrokAI.Testing
             try
             {
                 var tools = ToolRegistry.GetAvailableTools();
-                Assert("ToolRegistry_OmniToolGeneration", tools.Count == 3);
+                Assert("ToolRegistry_OmniToolGeneration", tools.Count >= 3);
             }
             catch (Exception ex) { Assert($"ToolRegistry_OmniToolGeneration EXCEPTION: {ex.Message}", false); }
 

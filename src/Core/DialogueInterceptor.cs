@@ -13,15 +13,25 @@ namespace LothbrokAI.Core
 {
     /// <summary>
     /// Connects the game's dialogue system to the LothbrokAI pipeline.
-    /// DESIGN: This intercepts vanilla dialogue under specific conditions,
-    /// hands the prompt to the APIRouter, parses the LLM output, and injects
-    /// it back into the game window.
+    /// 
+    /// DESIGN: Dialogue stays OPEN while the API runs on a background thread.
+    /// The player clicks "[Check for response...]" to poll. When the API finishes,
+    /// the NPC's reply node becomes active and displays the AI-generated text.
+    /// This mirrors the original AIInfluence mod's conversation flow.
+    /// 
+    /// FLOW:
+    /// hero_main_options → lothbrok_chat_input ("I am listening...")
+    ///   → lothbrok_chat_options ([Type a response])
+    ///     → lothbrok_chat_waiting ("..." / NPC reply)
+    ///       → lothbrok_chat_wait_options ([Check] / [Cancel])
+    ///         OR lothbrok_chat_loop_options ([Reply] / [Leave])
     /// </summary>
     public class DialogueInterceptor : CampaignBehaviorBase
     {
         public static string PlayerInputText = "";
 
-        private bool _isAIGenerating = false;
+        // Async state
+        private volatile bool _isAIGenerating = false;
         private string _lastGeneratedResponse = "";
         private string _lastGeneratedActionText = "";
 
@@ -32,13 +42,11 @@ namespace LothbrokAI.Core
 
         public override void SyncData(IDataStore dataStore)
         {
-            // SyncData for the mod is mostly handled by SaveManager, but
-            // we could store current conversation states here.
+            // SyncData for the mod is mostly handled by SaveManager
         }
 
         private void OnSessionLaunched(CampaignGameStarter starter)
         {
-            // Inject our dialogue entry point into the game's trees
             AddLothbrokDialogues(starter);
         }
 
@@ -48,15 +56,14 @@ namespace LothbrokAI.Core
             // ENTRY POINT
             // ================================================================
 
-            // 1. Player option to start AI chat (appears in the first screen of vanilla dialogue)
+            // Player option to start AI chat
             starter.AddPlayerLine(
                 "lothbrok_chat_start",
-                "hero_main_options",       // The main vanilla dialogue node
-                "lothbrok_chat_input",     // The node we jump to
+                "hero_main_options",
+                "lothbrok_chat_input",
                 "{=lothbrok_talk_opt}I wish to speak with you on a matter...",
                 conditionDelegate: () => Hero.OneToOneConversationHero != null,
                 consequenceDelegate: () => {
-                    // Initialize first contact if needed
                     PersonalityGenerator.EnsurePersonality(
                         ContextAssembler.GetNpcId(Hero.OneToOneConversationHero),
                         Hero.OneToOneConversationHero);
@@ -65,156 +72,98 @@ namespace LothbrokAI.Core
             // DEBUG: Run tests
             starter.AddPlayerLine(
                 "lothbrok_chat_debug_tests",
-                "hero_main_options",       
-                "hero_main_options",     
+                "hero_main_options",
+                "hero_main_options",
                 "[DEBUG] Run AI Test Harness",
                 conditionDelegate: () => Hero.OneToOneConversationHero != null,
                 consequenceDelegate: () => {
                     string result = LothbrokAI.Testing.LothbrokTestHarness.RunAllTests();
-                    InformationManager.ShowInquiry(new InquiryData("Test Results", result, true, false, "Close", "", null, null));
+                    InformationManager.ShowInquiry(new InquiryData(
+                        "Test Results", result, true, false, "Close", "", null, null));
                 });
 
-            // DEBUG: Map Calradia Graph
+            // DEBUG: Map Calradia Graph (background thread — no freeze)
             starter.AddPlayerLine(
                 "lothbrok_chat_debug_graph",
-                "hero_main_options",       
-                "hero_main_options",     
+                "hero_main_options",
+                "hero_main_options",
                 "[DEBUG] Map Calradia Graph (Graph DB Export)",
                 conditionDelegate: () => Hero.OneToOneConversationHero != null,
                 consequenceDelegate: () => {
-                    string logDir = System.IO.Path.Combine(LothbrokSubModule.ModDir, "logs");
-                    if (!System.IO.Directory.Exists(logDir)) System.IO.Directory.CreateDirectory(logDir);
-                    string path = System.IO.Path.Combine(logDir, "calradia_graph.json");
-                    string result = LothbrokAI.Core.CalradiaGraphExporter.ExportGraph(path);
-                    InformationManager.ShowInquiry(new InquiryData("Graph Export", result, true, false, "Close", "", null, null));
+                    InformationManager.DisplayMessage(new InformationMessage(
+                        "[LothbrokAI] Exporting graph in background...",
+                        new Color(0.5f, 0.8f, 1f)));
+
+                    Task.Run(() => {
+                        try
+                        {
+                            string logDir = System.IO.Path.Combine(LothbrokSubModule.ModDir, "logs");
+                            if (!System.IO.Directory.Exists(logDir))
+                                System.IO.Directory.CreateDirectory(logDir);
+                            string path = System.IO.Path.Combine(logDir, "calradia_graph.json");
+                            string result = CalradiaGraphExporter.ExportGraph(path);
+                            InformationManager.DisplayMessage(new InformationMessage(
+                                "[LothbrokAI] " + result, new Color(0.4f, 1f, 0.4f)));
+                        }
+                        catch (Exception ex)
+                        {
+                            InformationManager.DisplayMessage(new InformationMessage(
+                                "[LothbrokAI] Graph export failed: " + ex.Message,
+                                new Color(1f, 0.3f, 0.3f)));
+                        }
+                    });
                 });
 
             // ================================================================
-            // INPUT NODE
+            // STATE 1: IDLE / NPC HAS SPOKEN
             // ================================================================
 
-            // 2. The NPC waits for input
             starter.AddDialogLine(
                 "lothbrok_chat_input",
                 "lothbrok_chat_input",
                 "lothbrok_chat_options",
                 "{=lothbrok_listening}I am listening...",
-                conditionDelegate: () => true,
+                conditionDelegate: () => {
+                    MBTextManager.SetTextVariable("GENERATED_NPC_TEXT", "I am listening...");
+                    return true;
+                },
                 consequenceDelegate: null);
 
-            // ================================================================
-            // TEXT ENTRY
-            // ================================================================
-
-            // 3. The player chooses to type
-            starter.AddPlayerLine(
-                "lothbrok_chat_type",
-                "lothbrok_chat_options",
-                "lothbrok_chat_generating",
-                "{=lothbrok_type_opt}[Type a response]",
-                conditionDelegate: () => true,
-                consequenceDelegate: () => {
-                    _isAIGenerating = true;
-                    _lastGeneratedResponse = "Thinking...";
-                    
-                    var npc = Hero.OneToOneConversationHero;
-                    var player = Hero.MainHero;
-
-                    InformationManager.ShowTextInquiry(new TextInquiryData(
-                        "Speak to " + npc.Name,
-                        "What do you wish to say?",
-                        true, true,
-                        "Speak", "Cancel",
-                        text => {
-                            PlayerInputText = text;
-                            if (!string.IsNullOrWhiteSpace(text))
-                            {
-                                Task.Run(() => ProcessConversation(npc, player, text));
-                            }
-                            else
-                            {
-                                _isAIGenerating = false;
-                                _lastGeneratedResponse = "[Silence]";
-                            }
-                        },
-                        () => {
-                            // Cancelled
-                            _isAIGenerating = false;
-                            _lastGeneratedResponse = "[I changed my mind.]";
-                        }
-                    ));
-                });
-
-            // ================================================================
-            // GENERATION WAITING LOOP
-            // ================================================================
-
-            // 4. The NPC is "thinking" while the async task runs or inquiry is open
-            starter.AddDialogLine(
-                "lothbrok_chat_generating",
-                "lothbrok_chat_generating",
-                "lothbrok_chat_wait_loop",
-                "...",
-                conditionDelegate: () => _isAIGenerating,
-                consequenceDelegate: null);
-
-            starter.AddPlayerLine(
-                "lothbrok_chat_wait_loop",
-                "lothbrok_chat_wait_loop",
-                "lothbrok_chat_generating",
-                "[Wait for response...]",
-                conditionDelegate: () => _isAIGenerating,
-                consequenceDelegate: null);
-
-            starter.AddPlayerLine(
-                "lothbrok_chat_wait_cancel",
-                "lothbrok_chat_wait_loop",
-                "close_window", // Fail-safe exit if API hangs
-                "[Cancel and leave]",
-                conditionDelegate: () => _isAIGenerating,
-                consequenceDelegate: () => { _isAIGenerating = false; });
-
-            // ================================================================
-            // NPC RESPONSE
-            // ================================================================
-
-            // 5. When generation finishes, deliver the text
             starter.AddDialogLine(
                 "lothbrok_chat_npc_reply",
-                "lothbrok_chat_generating",
-                "lothbrok_chat_loop_options",
+                "lothbrok_chat_reply_target",
+                "lothbrok_chat_options",
                 "{GENERATED_NPC_TEXT}",
                 conditionDelegate: () => {
                     MBTextManager.SetTextVariable("GENERATED_NPC_TEXT", _lastGeneratedResponse);
-                    return !_isAIGenerating; // Only available when generation is done
+                    return true;
                 },
                 consequenceDelegate: () => {
+                    // Show action results as purple banner if any
                     if (!string.IsNullOrEmpty(_lastGeneratedActionText))
                     {
                         InformationManager.DisplayMessage(new InformationMessage(
-                            _lastGeneratedActionText, new TaleWorlds.Library.Color(0.8f, 0.4f, 1f)));
+                            _lastGeneratedActionText, new Color(0.8f, 0.4f, 1f)));
                         _lastGeneratedActionText = "";
                     }
                 });
 
             // ================================================================
-            // LOOP OR LEAVE
+            // OPTIONS FOR STATE 1
             // ================================================================
 
-            // 6a. Option to reply again
             starter.AddPlayerLine(
-                "lothbrok_chat_continue",
-                "lothbrok_chat_loop_options",
-                "lothbrok_chat_generating", // Jump directly to generate via inquiry
-                "{=lothbrok_reply_opt}[Reply]",
+                "lothbrok_chat_type",
+                "lothbrok_chat_options",
+                "lothbrok_chat_waiting_state", // Jumps here while you type
+                "{=lothbrok_type_opt}[Type a response]",
                 conditionDelegate: () => true,
                 consequenceDelegate: () => {
-                    _isAIGenerating = true;
-                    _lastGeneratedResponse = "Thinking...";
-                    
+                    _isAIGenerating = false; // Important: DO NOT set to true yet!
                     var npc = Hero.OneToOneConversationHero;
                     var player = Hero.MainHero;
 
+                    // Show text input popup
                     InformationManager.ShowTextInquiry(new TextInquiryData(
                         "Speak to " + npc.Name,
                         "What do you wish to say?",
@@ -224,38 +173,90 @@ namespace LothbrokAI.Core
                             PlayerInputText = text;
                             if (!string.IsNullOrWhiteSpace(text))
                             {
+                                // Fire API call on background thread
+                                _isAIGenerating = true;
                                 Task.Run(() => ProcessConversation(npc, player, text));
                             }
-                            else
-                            {
-                                _isAIGenerating = false;
-                                _lastGeneratedResponse = "[Silence]";
-                            }
                         },
-                        () => {
-                            _isAIGenerating = false;
-                            _lastGeneratedResponse = "[Silence]";
-                        }
+                        null
                     ));
                 });
 
-            // 6b. Option to return to vanilla dialogue options (only for lords)
+            // FIX: Return to vanilla dialogue (jump to lord_pretalk instead of looping)
             starter.AddPlayerLine(
                 "lothbrok_chat_return",
-                "lothbrok_chat_loop_options",
-                "hero_main_options", // Loop back to vanilla
-                "{=lothbrok_leave_opt}[Return to normal matters]",
+                "lothbrok_chat_options",
+                "lord_pretalk",
+                "{=lothbrok_return}[Return to normal matters]",
                 conditionDelegate: () => Hero.OneToOneConversationHero != null && Hero.OneToOneConversationHero.IsLord,
                 consequenceDelegate: null);
 
-            // 6c. Universal exit
+            // Universal exit
             starter.AddPlayerLine(
                 "lothbrok_chat_leave",
-                "lothbrok_chat_loop_options",
+                "lothbrok_chat_options",
                 "close_window",
-                "{=lothbrok_leave_opt}[Leave]",
+                "{=lothbrok_farewell}[Leave]",
                 conditionDelegate: () => true,
                 consequenceDelegate: null);
+
+            // ================================================================
+            // STATE 2: WAITING FOR AI
+            // ================================================================
+
+            // When user clicks [Type a response], background jumps here.
+            // Since it displays {GENERATED_NPC_TEXT}, it shows the OLD reply while they type.
+            starter.AddDialogLine(
+                "lothbrok_chat_waiting_state",
+                "lothbrok_chat_waiting_state",
+                "lothbrok_chat_wait_options",
+                "{GENERATED_NPC_TEXT}",  
+                conditionDelegate: () => true,
+                consequenceDelegate: null);
+
+            // ================================================================
+            // OPTIONS FOR STATE 2 (WAITING)
+            // ================================================================
+
+            // Universal polling option. 
+            // They see this immediately after closing the popup.
+            starter.AddPlayerLine(
+                "lothbrok_chat_check_any",
+                "lothbrok_chat_wait_options",
+                "lothbrok_chat_evaluate_wait",
+                "[Check for response...]",
+                conditionDelegate: () => true,
+                consequenceDelegate: null);
+
+            // Proxy evaluation node: 
+            // If they click check and it's NOT ready, it jumps here and NOW shows "..."
+            starter.AddDialogLine(
+                "lothbrok_chat_evaluate_wait_not_ready",
+                "lothbrok_chat_evaluate_wait",
+                "lothbrok_chat_wait_options",
+                "...", 
+                conditionDelegate: () => _isAIGenerating,
+                consequenceDelegate: null);
+
+            // If it IS ready, it sets the new text and jumps to the normal options
+            starter.AddDialogLine(
+                "lothbrok_chat_evaluate_wait_ready",
+                "lothbrok_chat_evaluate_wait",
+                "lothbrok_chat_options",
+                "{GENERATED_NPC_TEXT}",
+                conditionDelegate: () => {
+                    if (_isAIGenerating) return false;
+                    MBTextManager.SetTextVariable("GENERATED_NPC_TEXT", _lastGeneratedResponse);
+                    return true;
+                },
+                consequenceDelegate: () => {
+                    if (!string.IsNullOrEmpty(_lastGeneratedActionText))
+                    {
+                        InformationManager.DisplayMessage(new InformationMessage(
+                            _lastGeneratedActionText, new Color(0.8f, 0.4f, 1f)));
+                        _lastGeneratedActionText = "";
+                    }
+                });
         }
 
         // ================================================================
@@ -270,47 +271,56 @@ namespace LothbrokAI.Core
         {
             try
             {
-                // 1. Build the prompt via ContextAssembler
-                var builtPrompt = ContextAssembler.AssembleForConversation(npc, player, playerText);
+                LothbrokSubModule.Log($"ProcessConversation START: player said '{playerText}' to {npc.Name}");
 
-                // 2. Transmit to active API
+                // 1. Build the prompt
+                var builtPrompt = ContextAssembler.AssembleForConversation(npc, player, playerText);
+                LothbrokSubModule.Log($"Prompt built: System={builtPrompt.SystemPrompt.Length}c, User={builtPrompt.UserMessage.Length}c");
+
+                // 2. Call the API
                 var response = APIRouter.SendChatCompletion(
                     builtPrompt.SystemPrompt,
                     builtPrompt.UserMessage);
 
                 if (!response.Success)
                 {
-                    _lastGeneratedResponse = "[Failed to connect to mind: " + response.Error + "]";
+                    LothbrokSubModule.Log($"API FAILED: {response.Error}", Debug.DebugColor.Red);
+                    _lastGeneratedResponse = "[The words would not come. Error: " + response.Error + "]";
+
+                    // Show red banner so player knows something went wrong
+                    InformationManager.DisplayMessage(new InformationMessage(
+                        $"[LothbrokAI] API Error — click [Check for response] to see details.",
+                        new Color(1f, 0.3f, 0.3f)));
                 }
                 else
                 {
-                    // 3. Parse text and extract structured actions
+                    LothbrokSubModule.Log($"API SUCCESS: {response.LatencyMs}ms, {response.TotalTokens} tokens");
+
+                    // 3. Parse response
                     var parsed = ResponseProcessor.Parse(response.Text);
                     _lastGeneratedResponse = parsed.DialogueText;
 
                     string npcId = ContextAssembler.GetNpcId(npc);
                     int gameDay = (int)CampaignTime.Now.ToDays;
 
-                    // 4. Save to MemoryEngine graph
+                    // 4. Save to memory
                     MemoryEngine.Store(npcId, npc.Name.ToString(), playerText, parsed.DialogueText, gameDay);
 
-                    // 5. Execute Action Engine (Game Decides, AI narrates)
-                    // Note: Actions altering game state MUST run on main thread!
+                    // 5. Queue actions for main thread
                     if (parsed.Actions.Count > 0)
                     {
-                        // Safely queue action execution onto the main game thread
-                        TaleWorlds.Library.InformationManager.DisplayMessage(
-                            new TaleWorlds.Library.InformationMessage("Processing actions..."));
-                        
-                        // We store the actions and flag to execute them on the next tick
-                        // via CampaignEvents.TickEvent (implemented in SubModule or Patches)
                         QueueActionsForMainThread(parsed.Actions, npc, player);
                     }
+
+                    // Show green banner so player knows response is ready
+                    InformationManager.DisplayMessage(new InformationMessage(
+                        $"[LothbrokAI] {npc.Name} is ready to speak. Click [Check for response].",
+                        new Color(0.4f, 1f, 0.4f)));
                 }
             }
             catch (Exception ex)
             {
-                LothbrokSubModule.Log("Error in ProcessConversation: " + ex.Message, Debug.DebugColor.Red);
+                LothbrokSubModule.LogError("ProcessConversation", ex);
                 _lastGeneratedResponse = "[I seem to have lost my train of thought. Error: " + ex.Message + "]";
             }
             finally
@@ -319,8 +329,11 @@ namespace LothbrokAI.Core
             }
         }
 
-        // Action queue for main thread execution
-        private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _mainThreadQueue = 
+        // ================================================================
+        // ACTION QUEUE (main thread execution)
+        // ================================================================
+
+        private static readonly System.Collections.Concurrent.ConcurrentQueue<Action> _mainThreadQueue =
             new System.Collections.Concurrent.ConcurrentQueue<Action>();
 
         private void QueueActionsForMainThread(System.Collections.Generic.List<NpcAction> actions, Hero npc, Hero player)
@@ -334,6 +347,9 @@ namespace LothbrokAI.Core
             });
         }
 
+        /// <summary>
+        /// Called from the main thread tick to process queued actions safely.
+        /// </summary>
         public static void ProcessMainThreadActions()
         {
             while (_mainThreadQueue.TryDequeue(out Action action))

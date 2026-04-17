@@ -43,6 +43,10 @@
       <HintPath>$(GameBin)\TaleWorlds.ObjectSystem.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="TaleWorlds.CampaignSystem.ViewModelCollection">
+      <HintPath>$(GameBin)\TaleWorlds.CampaignSystem.ViewModelCollection.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="TaleWorlds.DotNet">
       <HintPath>$(GameBin)\TaleWorlds.DotNet.dll</HintPath>
       <Private>false</Private>

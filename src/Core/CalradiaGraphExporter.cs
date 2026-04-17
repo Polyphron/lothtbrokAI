@@ -103,7 +103,14 @@ namespace LothbrokAI.Core
                 // ==========================================
                 // 3. EXTRACT HEROES
                 // ==========================================
-                foreach (var hero in Campaign.Current.AliveHeroes)
+                var relevantHeroes = new List<Hero>();
+                foreach (var h in Campaign.Current.AliveHeroes)
+                {
+                    if (h.Age >= 18 && (h.IsLord || h.IsWanderer || h.IsNotable))
+                        relevantHeroes.Add(h);
+                }
+
+                foreach (var hero in relevantHeroes)
                 {
                     graph.Nodes.Add(new GraphNode
                     {
@@ -128,12 +135,14 @@ namespace LothbrokAI.Core
                         });
                     }
 
-                    // Edges: Relationships
-                    foreach (var target in Campaign.Current.AliveHeroes)
+                    // Edges: Relationships (Lords only to prevent O(N^2) game freeze)
+                    if (hero.IsLord)
                     {
-                        if (hero == target) continue;
-                        
-                        int relation = hero.GetRelation(target);
+                        foreach (var target in relevantHeroes)
+                        {
+                            if (hero == target || !target.IsLord) continue;
+                            
+                            int relation = hero.GetRelation(target);
                         if (relation >= 30)
                         {
                             graph.Edges.Add(new GraphEdge
@@ -144,15 +153,16 @@ namespace LothbrokAI.Core
                                 Properties = { ["relation"] = relation }
                             });
                         }
-                        else if (relation <= -30)
-                        {
-                            graph.Edges.Add(new GraphEdge
+                            else if (relation <= -30)
                             {
-                                SourceId = "H_" + ContextAssembler.GetNpcId(hero),
-                                TargetId = "H_" + ContextAssembler.GetNpcId(target),
-                                Type = "IS_ENEMY_OF",
-                                Properties = { ["relation"] = relation }
-                            });
+                                graph.Edges.Add(new GraphEdge
+                                {
+                                    SourceId = "H_" + ContextAssembler.GetNpcId(hero),
+                                    TargetId = "H_" + ContextAssembler.GetNpcId(target),
+                                    Type = "IS_ENEMY_OF",
+                                    Properties = { ["relation"] = relation }
+                                });
+                            }
                         }
                     }
                 }

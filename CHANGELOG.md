@@ -5,6 +5,19 @@ All notable changes to LothbrokAI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-04-17
+
+### Added
+- **Take Gold Action**: Added `TakeGoldHandler` to mechanically support players bribing/gifting gold to NPCs (LLM can extract gold if offered).
+
+### Changed
+- **System Prompt Formatting**: Stopped prompting the LLM with OpenAI function-calling parameters and reverted strictly to the explicit custom `[ACTIONS]` JSON text block injection to match `ResponseProcessor.cs` parser.
+- **Action Engine Resilience**: Handlers now gracefully fallback to parsing JSON `"value"` keys instead of strictly typing on implicit strings (like `"gold"`).
+
+### Fixed
+- **Dialogue History Clamping**: Clicking "Type a response" no longer instantly overwrites the NPC response with "...". Added a `lothbrok_chat_waiting_state` node that cleanly preserves {GENERATED_NPC_TEXT} while the player is typing their message, transitioning to the background "Check for response..." phase.
+- **Vanilla Dialogue Looping**: The "Return to normal matters" generic exit option is now safely mapped to the `lord_pretalk` node (Vanilla Root Hook) to prevent the AI menu from entering an infinite deadlock.
+
 ## [0.4.1] - 2026-04-16
 
 ### Fixed
