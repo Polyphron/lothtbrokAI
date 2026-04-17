@@ -40,14 +40,10 @@ namespace LothbrokAI.Core
             // Build world context
             string worldContext = BuildWorldContext(npc, player);
 
-            // Register world-state nodes into the hypergraph (kingdoms, clans)
-            // DESIGN: Done once per conversation start so world nodes can participate
-            // in concept spreading even if never explicitly mentioned in dialogue.
-            if (LothbrokConfig.Current.HypergraphEnabled && LothbrokDatabase.IsOpen)
-            {
-                string graphJson = CalradiaGraphExporter.ExportGraph(null);
-                HypergraphEngine.RegisterWorldNodes(graphJson);
-            }
+            // DESIGN: World-state nodes (kingdoms, clans) are registered into
+            // the hypergraph ONCE on campaign load (see LothbrokSubModule).
+            // Previously done here every conversation — 80+ SQLite inserts
+            // per conversation for state that changes maybe 2-3 times per day.
 
             // Build relationship description
             string relationship = BuildRelationshipContext(npc, player, memory.Metadata);

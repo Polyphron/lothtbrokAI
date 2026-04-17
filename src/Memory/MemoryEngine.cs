@@ -205,11 +205,26 @@ namespace LothbrokAI.Memory
 
             List<string> relevant;
 
-            // DESIGN: Prefer semantic search when vectors available, fall back to TF-IDF.
-            // The first few conversations will have no vectors yet (embedding API cold start).
-            // TF-IDF ensures players always get some memory retrieval even on first run.
-            float[] queryVec = API.APIRouter.GetEmbedding(playerMessage);
-            if (queryVec != null && LothbrokDatabase.IsOpen)
+            // DESIGN: ZERO network calls during Retrieve(). The player is waiting.
+            //
+            // Old approach: called GetEmbedding(playerMessage) here — added 100-500ms
+            // of network latency to the critical path before the LLM call even starts.
+            //
+            // New approach: use the LAST stored vector for this NPC as a rough query
+            // vector (the most recent topic is likely the best proxy). If no vectors
+            // exist yet (first few conversations), fall back to TF-IDF immediately.
+            //
+            // Precise query embedding happens during Store() AFTER the response is
+            // shown to the player — no latency on the critical path.
+
+            float[] queryVec = null;
+            if (LothbrokDatabase.IsOpen)
+            {
+                // Use most recent stored vector for this NPC as query proxy
+                queryVec = VectorIndex.GetLatestVector(npcId);
+            }
+
+            if (queryVec != null)
             {
                 relevant = VectorIndex.Search(queryVec, npcId, currentGameDay, topK);
 
@@ -471,23 +486,245 @@ namespace LothbrokAI.Memory
 
         private static List<string> ExtractTags(string text)
         {
-            // DESIGN: Tags are used for context spreading in the memory graph.
-            // For Phase 1, we just extract proper nouns (capitalized words).
-            // Phase 2 will add NPC name detection, location detection, etc.
-            var tags = new List<string>();
-            var words = text.Split(' ');
+            // DESIGN: Tags feed the hypergraph context engine. Two sources:
+            //   1. Game-concept dictionary: detects semantic concepts regardless
+            //      of capitalization ("I gave you gold" → CONCEPT_gold).
+            //   2. Proper noun detection: catches NPC names, locations, kingdoms
+            //      ("Dermot told me" → H_dermot linkage).
+            //
+            // This replaced the Phase 1 proper-noun-only extraction which
+            // produced empty tag sets for ~90% of real player dialogue,
+            // leaving the hypergraph inert.
+
+            var tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Normalize for concept matching
+            string lower = text.ToLowerInvariant();
+            var words = lower.Split(new[] { ' ', '.', ',', '!', '?', ':', ';', '-',
+                '"', '\'', '(', ')', '[', ']', '\n', '\r', '\t' },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            // --- PASS 1: Game-concept dictionary ---
+            // Each concept keyword maps to a canonical concept tag.
+            // Multiple surface forms can map to the same concept.
             foreach (string word in words)
             {
-                string clean = word.Trim('.', ',', '!', '?', ':', ';', '"', '\'');
-                if (clean.Length > 2 && char.IsUpper(clean[0]) && !StopWords.Contains(clean.ToLowerInvariant()))
+                string concept;
+                if (GameConceptDictionary.TryGetValue(word, out concept))
                 {
-                    string lower = clean.ToLowerInvariant();
-                    if (!tags.Contains(lower))
-                        tags.Add(lower);
+                    tags.Add(concept);
                 }
             }
-            return tags;
+
+            // Multi-word concept detection (phrases)
+            foreach (var phrase in GameConceptPhrases)
+            {
+                if (lower.Contains(phrase.Key))
+                    tags.Add(phrase.Value);
+            }
+
+            // --- PASS 2: Proper nouns (NPC names, locations) ---
+            var rawWords = text.Split(' ');
+            foreach (string word in rawWords)
+            {
+                string clean = word.Trim('.', ',', '!', '?', ':', ';', '"', '\'');
+                if (clean.Length > 2
+                    && char.IsUpper(clean[0])
+                    && !StopWords.Contains(clean.ToLowerInvariant()))
+                {
+                    tags.Add(clean.ToLowerInvariant());
+                }
+            }
+
+            return new List<string>(tags);
         }
+
+        // ================================================================
+        // GAME CONCEPT DICTIONARY
+        // ================================================================
+
+        // DESIGN: Maps surface-form words to canonical concept tags.
+        // Curated for the Bannerlord domain. Kept as a flat dictionary
+        // for O(1) lookup per word — no regex, no NLP, no API calls.
+        // This is what makes the hypergraph actually work.
+
+        private static readonly Dictionary<string, string> GameConceptDictionary =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // --- Economy ---
+            { "gold",       "gold" },
+            { "coin",       "gold" },
+            { "coins",      "gold" },
+            { "denars",     "gold" },
+            { "denar",      "gold" },
+            { "money",      "gold" },
+            { "pay",        "gold" },
+            { "paid",       "gold" },
+            { "payment",    "gold" },
+            { "bribe",      "bribery" },
+            { "bribed",     "bribery" },
+            { "bribery",    "bribery" },
+            { "gift",       "generosity" },
+            { "generous",   "generosity" },
+            { "trade",      "trade" },
+            { "trading",    "trade" },
+            { "merchant",   "trade" },
+            { "goods",      "trade" },
+            { "price",      "trade" },
+            { "buy",        "trade" },
+            { "sell",       "trade" },
+
+            // --- War & Combat ---
+            { "war",        "war" },
+            { "battle",     "war" },
+            { "fight",      "war" },
+            { "fighting",   "war" },
+            { "army",       "war" },
+            { "siege",      "siege" },
+            { "attack",     "war" },
+            { "raid",       "raid" },
+            { "raiding",    "raid" },
+            { "sword",      "combat" },
+            { "knight",     "combat" },
+            { "soldier",    "war" },
+            { "troops",     "war" },
+            { "kill",       "violence" },
+            { "killed",     "violence" },
+            { "death",      "death" },
+            { "dead",       "death" },
+            { "died",       "death" },
+            { "blood",      "violence" },
+            { "revenge",    "revenge" },
+            { "vengeance",  "revenge" },
+
+            // --- Diplomacy & Politics ---
+            { "peace",      "peace" },
+            { "truce",      "peace" },
+            { "alliance",   "alliance" },
+            { "ally",       "alliance" },
+            { "allies",     "alliance" },
+            { "vassal",     "fealty" },
+            { "king",       "royalty" },
+            { "queen",      "royalty" },
+            { "ruler",      "royalty" },
+            { "throne",     "royalty" },
+            { "kingdom",    "politics" },
+            { "empire",     "politics" },
+            { "rebel",      "rebellion" },
+            { "rebellion",  "rebellion" },
+            { "overthrow",  "rebellion" },
+            { "power",      "power" },
+            { "influence",  "power" },
+            { "court",      "politics" },
+            { "council",    "politics" },
+            { "vote",       "politics" },
+            { "election",   "politics" },
+            { "conspiracy", "conspiracy" },
+            { "plot",       "conspiracy" },
+            { "scheme",     "conspiracy" },
+
+            // --- Trust & Relationships ---
+            { "trust",      "trust" },
+            { "trusted",    "trust" },
+            { "distrust",   "distrust" },
+            { "betray",     "betrayal" },
+            { "betrayal",   "betrayal" },
+            { "betrayed",   "betrayal" },
+            { "treachery",  "betrayal" },
+            { "loyal",      "loyalty" },
+            { "loyalty",    "loyalty" },
+            { "oath",       "loyalty" },
+            { "promise",    "promise" },
+            { "honor",      "honor" },
+            { "honour",     "honor" },
+            { "friend",     "friendship" },
+            { "friendship", "friendship" },
+            { "enemy",      "enmity" },
+            { "enemies",    "enmity" },
+            { "hate",       "enmity" },
+            { "hatred",     "enmity" },
+            { "rival",      "rivalry" },
+            { "respect",    "respect" },
+            { "fear",       "fear" },
+            { "afraid",     "fear" },
+            { "threat",     "threat" },
+            { "threaten",   "threat" },
+            { "lie",        "deception" },
+            { "lying",      "deception" },
+            { "liar",       "deception" },
+            { "secret",     "secrets" },
+            { "secrets",    "secrets" },
+            { "spy",        "espionage" },
+            { "spying",     "espionage" },
+            { "informant",  "espionage" },
+
+            // --- Romance & Family ---
+            { "love",       "romance" },
+            { "romance",    "romance" },
+            { "romantic",   "romance" },
+            { "kiss",       "romance" },
+            { "heart",      "romance" },
+            { "beautiful",  "attraction" },
+            { "handsome",   "attraction" },
+            { "eyes",       "attraction" },
+            { "marry",      "marriage" },
+            { "marriage",   "marriage" },
+            { "wife",       "marriage" },
+            { "husband",    "marriage" },
+            { "wedding",    "marriage" },
+            { "child",      "family" },
+            { "children",   "family" },
+            { "son",        "family" },
+            { "daughter",   "family" },
+            { "father",     "family" },
+            { "mother",     "family" },
+            { "brother",    "family" },
+            { "sister",     "family" },
+            { "heir",       "succession" },
+            { "inheritance","succession" },
+            { "bloodline",  "succession" },
+
+            // --- Assistance & Quests ---
+            { "help",       "assistance" },
+            { "quest",      "quest" },
+            { "task",       "quest" },
+            { "mission",    "quest" },
+            { "favor",      "favor" },
+            { "favour",     "favor" },
+            { "reward",     "reward" },
+            { "rescue",     "rescue" },
+            { "protect",    "protection" },
+            { "escort",     "protection" },
+            { "guard",      "protection" },
+
+            // --- Social Class & Identity ---
+            { "lord",       "nobility" },
+            { "lady",       "nobility" },
+            { "noble",      "nobility" },
+            { "peasant",    "commoners" },
+            { "bandit",     "banditry" },
+            { "bandits",    "banditry" },
+            { "outlaw",     "banditry" },
+            { "mercenary",  "mercenary" },
+            { "clan",       "clan" },
+        };
+
+        // Multi-word phrases → concept (checked via string.Contains)
+        private static readonly Dictionary<string, string> GameConceptPhrases =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "at war",         "war" },
+            { "make peace",     "peace" },
+            { "don't trust",    "distrust" },
+            { "do not trust",   "distrust" },
+            { "can't trust",    "distrust" },
+            { "swear fealty",   "fealty" },
+            { "join kingdom",   "fealty" },
+            { "take the throne","rebellion" },
+            { "behind your back","betrayal" },
+            { "in love",        "romance" },
+            { "spy network",    "espionage" },
+        };
 
         // ================================================================
         // EXTRACTIVE SUMMARY (Phase 1 fallback)

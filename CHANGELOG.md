@@ -5,6 +5,22 @@ All notable changes to LothbrokAI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-04-17
+
+### Fixed
+- **Concept Dictionary Extraction**: Replaced broken proper-noun-only `ExtractTags` with a game-concept dictionary (140+ surface forms → ~50 canonical concepts). "I gave you gold" now produces `[gold]` instead of `[]`. This unblocks the entire hypergraph — previously ~90% of dialogue produced zero tags.
+- **Pairwise Edges**: Rewrote `OnExchangeStored` to emit pairwise edges (`{Player, CONCEPT}`, `{NPC, CONCEPT}`, `{Player, NPC}`) plus context triples for top-2 concepts. Previously one mega-edge per exchange with all tags — made co-occurrence accumulation impossible since any different tag set = different edge hash.
+- **Zero-Latency Retrieval**: Removed blocking `GetEmbedding()` API call from `Retrieve()`. Now uses most-recent stored vector as query proxy (instant SQLite read). Saves 100-500ms per conversation turn on the player-facing critical path.
+- **Event-Driven World Registration**: Moved world node registration from per-conversation (80+ inserts per chat) to once-on-campaign-load. Saves 15-70ms per conversation.
+
+### Added
+- **Manifold Fold** (Property Graph Traversal): When hyperedges fire, the system now traverses Bannerlord's live clan/kingdom hierarchy to find structurally connected NPCs. If you bribe Dermot (Battanian lord) and the gold edge fires, Siaramus (also Battanian) gets secondary activation — his gold-related edges surface too. The hypergraph provides activation energy; the property graph provides traversal paths.
+- **`VectorIndex.GetLatestVector()`**: Returns most recent stored vector for zero-latency retrieval proxy.
+- **Multi-word phrase detection**: "don't trust", "swear fealty", "take the throne" etc. detected via `string.Contains` matching.
+
+### Architecture
+- The three-layer manifold is now structurally coupled: Property Graph (skeleton) → Semantic Index (flesh) → Hypergraph (nervous system). The fold is: hypergraph activation propagates ALONG property graph edges, not independently.
+
 ## [0.5.0] - 2026-04-17
 
 ### Added

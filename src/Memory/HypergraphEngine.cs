@@ -37,8 +37,17 @@ namespace LothbrokAI.Memory
 
         /// <summary>
         /// Called after each conversation exchange.
-        /// Extracts concept nodes from tags and creates/strengthens hyperedges
-        /// linking the NPC, player, and any activated concepts.
+        /// Extracts concept nodes from tags and creates PAIRWISE hyperedges:
+        ///   {Player, CONCEPT_X}   — player discussed concept X
+        ///   {NPC, CONCEPT_X}      — concept X associated with this NPC
+        ///   {Player, NPC}         — player interacted with NPC
+        ///
+        /// DESIGN: Pairwise edges (not mega-edges) enable co-occurrence
+        /// accumulation. When the player discusses "gold" across 3 different
+        /// NPCs, the {Player, CONCEPT_gold} edge reaches activation_count=3.
+        /// A mega-edge with ALL tags from one exchange is too specific —
+        /// it almost never matches again because any different tag set
+        /// produces a different edge hash.
         /// </summary>
         public static void OnExchangeStored(
             string npcId, string npcName,
@@ -49,10 +58,12 @@ namespace LothbrokAI.Memory
             if (tags == null || tags.Count == 0) return;
 
             // Ensure hero nodes exist
-            UpsertNode("H_" + npcId, "hero", npcName);
-            UpsertNode("H_" + playerNpcId, "hero", "Player");
+            string heroNode = "H_" + npcId;
+            string playerNode = "H_" + playerNpcId;
+            UpsertNode(heroNode, "hero", npcName);
+            UpsertNode(playerNode, "hero", "Player");
 
-            // Create concept nodes from tags
+            // Create concept nodes
             var conceptNodeIds = new List<string>();
             foreach (string tag in tags)
             {
@@ -61,19 +72,43 @@ namespace LothbrokAI.Memory
                 conceptNodeIds.Add(conceptId);
             }
 
-            // Only build edges when we have enough concept signal
-            if (conceptNodeIds.Count == 0) return;
+            // --- PAIRWISE EDGES ---
 
-            // Build hyperedge: {NPC, Player, concepts...}
-            // Group concepts into one edge per exchange — captures the full context
-            // of this moment rather than isolated pairwise edges.
-            var edgeNodes = new List<string> { "H_" + npcId, "H_" + playerNpcId };
-            edgeNodes.AddRange(conceptNodeIds);
+            // 1. Player ↔ NPC interaction edge (always created)
+            UpsertEdge(
+                BuildEdgeId(playerNode, heroNode),
+                "interaction",
+                new List<string> { playerNode, heroNode });
 
-            string edgeLabel = BuildEdgeLabel(tags);
-            string edgeId = BuildEdgeId(edgeNodes);
+            // 2. Player ↔ each concept (player behavioral pattern)
+            foreach (string cid in conceptNodeIds)
+            {
+                UpsertEdge(
+                    BuildEdgeId(playerNode, cid),
+                    "player_" + cid.Replace("CONCEPT_", ""),
+                    new List<string> { playerNode, cid });
+            }
 
-            UpsertEdge(edgeId, edgeLabel, edgeNodes);
+            // 3. NPC ↔ each concept (NPC association)
+            foreach (string cid in conceptNodeIds)
+            {
+                UpsertEdge(
+                    BuildEdgeId(heroNode, cid),
+                    npcName.ToLowerInvariant() + "_" + cid.Replace("CONCEPT_", ""),
+                    new List<string> { heroNode, cid });
+            }
+
+            // 4. Context triple: {Player, NPC, Concept} — the specific context
+            //    Only for concepts that feel significant (top 2 by occurrence)
+            int tripleLimit = Math.Min(2, conceptNodeIds.Count);
+            for (int i = 0; i < tripleLimit; i++)
+            {
+                var tripleNodes = new List<string> { playerNode, heroNode, conceptNodeIds[i] };
+                UpsertEdge(
+                    BuildEdgeId(tripleNodes),
+                    "context_" + conceptNodeIds[i].Replace("CONCEPT_", ""),
+                    tripleNodes);
+            }
         }
 
         // ================================================================
@@ -82,9 +117,17 @@ namespace LothbrokAI.Memory
 
         /// <summary>
         /// Given the active context (current NPC + concepts from current message),
-        /// find all hyperedges that share 2+ nodes with the context.
-        /// Returns those edges as natural language context chain strings
-        /// for injection into the prompt.
+        /// find all hyperedges that share nodes with the context.
+        ///
+        /// DESIGN (Manifold Fold): After finding directly fired edges, we
+        /// TRAVERSE the property graph to find secondary activation targets.
+        /// If a fired edge involves H_dermot + CONCEPT_gold, and Dermot is
+        /// a vassal of Battania, then all Battanian lords who also have
+        /// CONCEPT_gold edges get their edges surfaced too.
+        ///
+        /// The hypergraph provides activation energy.
+        /// The property graph provides traversal paths.
+        /// Together they form a surface richer than either alone.
         /// </summary>
         public static List<string> GetActivatedContextChains(
             string activeNpcId,
@@ -104,12 +147,16 @@ namespace LothbrokAI.Memory
 
             if (activeNodes.Count < 2) return new List<string>();
 
-            // Find edges where at least 2 of their nodes are in the active set
+            // --- PHASE 1: Direct edge activation ---
+            // Find pairwise edges where the active node set matches
+            var firedEdgeIds = new HashSet<string>();
+            var firedHeroNodes = new HashSet<string>();
+            var firedConceptNodes = new HashSet<string>();
+
             using (var cmd = LothbrokDatabase.GetConnection().CreateCommand())
             {
-                // Get edge IDs with matching node count
                 string nodeList = string.Join(",",
-                    activeNodes.Select(n => $"'{n.Replace("'", "''")}'")); 
+                    activeNodes.Select(n => $"'{n.Replace("'", "''")}'"));
 
                 cmd.CommandText = $@"
                     SELECT e.id, e.label, e.activation_count
@@ -133,7 +180,8 @@ namespace LothbrokAI.Memory
                         string label = reader.GetString(1);
                         int activationCount = reader.GetInt32(2);
 
-                        // Get all nodes for this edge to build a readable context chain
+                        firedEdgeIds.Add(edgeId);
+
                         var edgeNodeLabels = GetEdgeNodeLabels(edgeId);
                         if (edgeNodeLabels.Count < 2) continue;
 
@@ -143,11 +191,146 @@ namespace LothbrokAI.Memory
                 }
             }
 
-            // Increment activation count for all fired edges
-            if (results.Count > 0)
+            // Collect hero and concept nodes from fired edges for Phase 2
+            foreach (string edgeId in firedEdgeIds)
+            {
+                foreach (string nodeId in GetEdgeNodeIds(edgeId))
+                {
+                    if (nodeId.StartsWith("H_")) firedHeroNodes.Add(nodeId);
+                    else if (nodeId.StartsWith("CONCEPT_")) firedConceptNodes.Add(nodeId);
+                }
+            }
+
+            // --- PHASE 2: Property graph traversal (the manifold fold) ---
+            // For each hero in a fired edge, find structurally connected heroes
+            // (same clan, same kingdom) and check if THEY have edges with the
+            // same fired concepts. This is how reputation propagates.
+            if (firedConceptNodes.Count > 0 && firedHeroNodes.Count > 0)
+            {
+                var secondaryHeroes = FindStructuralNeighbors(activeNpcId, firedHeroNodes);
+
+                // Check if these secondary heroes have edges with fired concepts
+                foreach (string secondaryHero in secondaryHeroes)
+                {
+                    if (activeNodes.Contains(secondaryHero)) continue; // skip self
+                    if (firedHeroNodes.Contains(secondaryHero)) continue; // already fired
+
+                    foreach (string concept in firedConceptNodes)
+                    {
+                        string candidateEdgeId = BuildEdgeId(secondaryHero, concept);
+
+                        using (var cmd = LothbrokDatabase.GetConnection().CreateCommand())
+                        {
+                            cmd.CommandText = @"
+                                SELECT label, activation_count FROM hg_edges
+                                WHERE id = @id AND activation_count >= @min";
+                            cmd.Parameters.AddWithValue("@id", candidateEdgeId);
+                            cmd.Parameters.AddWithValue("@min", config.HyperedgeMinActivations);
+
+                            using (var reader = cmd.ExecuteReader())
+                            {
+                                if (reader.Read())
+                                {
+                                    string label = reader.GetString(0);
+                                    int count = reader.GetInt32(1);
+                                    var labels = GetEdgeNodeLabels(candidateEdgeId);
+                                    string chain = "⟵ " + FormatContextChain(
+                                        label, labels, count);
+                                    results.Add((count, chain));
+                                }
+                            }
+                        }
+                    }
+
+                    // Cap secondary results to avoid prompt bloat
+                    if (results.Count >= config.MaxContextChains * 2) break;
+                }
+            }
+
+            // Increment activation count for all directly fired edges
+            if (firedEdgeIds.Count > 0)
                 IncrementActivations(activeNodes, config.HyperedgeMinActivations);
 
             return results.Select(r => r.chain).ToList();
+        }
+
+        /// <summary>
+        /// Find heroes structurally connected to the given heroes via
+        /// Bannerlord's clan/kingdom hierarchy.
+        ///
+        /// DESIGN: This IS the manifold fold. The hypergraph provides
+        /// the activation energy (which concepts fired), and this method
+        /// traverses the real-world game structure to find secondary targets.
+        /// We query LIVE game state (not cached SQLite) because relationships
+        /// change dynamically (wars, defections, marriages).
+        /// </summary>
+        private static HashSet<string> FindStructuralNeighbors(
+            string activeNpcId,
+            HashSet<string> seedHeroNodes)
+        {
+            var neighbors = new HashSet<string>();
+
+            try
+            {
+                var campaign = TaleWorlds.CampaignSystem.Campaign.Current;
+                if (campaign == null) return neighbors;
+
+                // For each fired hero, find their clan/kingdom mates
+                foreach (string heroNode in seedHeroNodes)
+                {
+                    string heroId = heroNode.Replace("H_", "");
+                    var hero = TaleWorlds.CampaignSystem.Hero.FindFirst(
+                        h => h.StringId == heroId);
+                    if (hero?.Clan == null) continue;
+
+                    // Same clan = strong structural connection
+                    foreach (var clanmate in hero.Clan.Heroes)
+                    {
+                        if (clanmate.IsAlive && clanmate.StringId != activeNpcId)
+                            neighbors.Add("H_" + clanmate.StringId);
+                    }
+
+                    // Same kingdom = weaker but still meaningful
+                    if (hero.Clan.Kingdom != null)
+                    {
+                        foreach (var vassalClan in hero.Clan.Kingdom.Clans)
+                        {
+                            if (vassalClan.Leader != null
+                                && vassalClan.Leader.IsAlive
+                                && vassalClan.Leader.StringId != activeNpcId)
+                            {
+                                neighbors.Add("H_" + vassalClan.Leader.StringId);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LothbrokSubModule.Log("[HypergraphEngine] Structural neighbor lookup failed: "
+                    + ex.Message, TaleWorlds.Library.Debug.DebugColor.Yellow);
+            }
+
+            return neighbors;
+        }
+
+        /// <summary>Get raw node IDs (not labels) for an edge.</summary>
+        private static List<string> GetEdgeNodeIds(string edgeId)
+        {
+            var ids = new List<string>();
+            using (var cmd = LothbrokDatabase.GetConnection().CreateCommand())
+            {
+                cmd.CommandText = @"
+                    SELECT node_id FROM hg_edge_nodes
+                    WHERE edge_id = @edgeId";
+                cmd.Parameters.AddWithValue("@edgeId", edgeId);
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read())
+                        ids.Add(reader.GetString(0));
+                }
+            }
+            return ids;
         }
 
         // ================================================================
@@ -304,21 +487,24 @@ namespace LothbrokAI.Memory
             string label, List<string> nodeLabels, int activationCount)
         {
             // DESIGN: Format as a compact, readable context hint for the LLM.
-            // Example: "bribery_context [Dermot, Player, gold, trust] (×3)"
+            // Example: "player_gold [Player, gold] (×5)"
             string nodes = string.Join(", ", nodeLabels.Take(5));
             return $"{label} [{nodes}] (×{activationCount})";
         }
 
-        private static string BuildEdgeLabel(List<string> tags)
+        /// <summary>Canonical 2-node edge ID (pairwise).</summary>
+        private static string BuildEdgeId(string nodeA, string nodeB)
         {
-            // Label is the first 2 content tags joined — descriptive but short
-            var content = tags.Take(2).Select(t => t.ToLowerInvariant().Replace(" ", "_"));
-            return string.Join("_", content) + "_context";
+            // Sorted so {A,B} and {B,A} are the same edge
+            string first = string.CompareOrdinal(nodeA, nodeB) <= 0 ? nodeA : nodeB;
+            string second = first == nodeA ? nodeB : nodeA;
+            string combined = first + "|" + second;
+            return "HE_" + Math.Abs(combined.GetHashCode()).ToString("X8");
         }
 
+        /// <summary>Canonical n-node edge ID (for context triples).</summary>
         private static string BuildEdgeId(List<string> nodeIds)
         {
-            // Canonical edge ID: sorted node IDs joined — ensures same set = same edge
             var sorted = new List<string>(nodeIds);
             sorted.Sort();
             string combined = string.Join("|", sorted);

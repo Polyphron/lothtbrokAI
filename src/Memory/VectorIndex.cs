@@ -143,6 +143,36 @@ namespace LothbrokAI.Memory
             return results;
         }
 
+        /// <summary>
+        /// Get the most recently stored vector for an NPC.
+        /// Used as a zero-latency query proxy during Retrieve() —
+        /// avoids a blocking embedding API call on the critical path.
+        ///
+        /// DESIGN: The most recent conversation topic is the best proxy
+        /// for what the player is likely to discuss next. Not perfect,
+        /// but it is instant and "good enough" for retrieval — the
+        /// hypergraph context chains provide the deeper relevance.
+        /// </summary>
+        public static float[] GetLatestVector(string npcId)
+        {
+            if (!LothbrokDatabase.IsOpen) return null;
+
+            using (var cmd = LothbrokDatabase.GetConnection().CreateCommand())
+            {
+                cmd.CommandText = @"
+                    SELECT vector FROM memories
+                    WHERE npc_id = @npcId AND vector IS NOT NULL
+                    ORDER BY game_day DESC, created_at DESC
+                    LIMIT 1";
+                cmd.Parameters.AddWithValue("@npcId", npcId);
+
+                object result = cmd.ExecuteScalar();
+                if (result == null || result == DBNull.Value) return null;
+
+                return DeserializeVector((byte[])result);
+            }
+        }
+
         // ================================================================
         // VECTOR UTILITIES
         // ================================================================

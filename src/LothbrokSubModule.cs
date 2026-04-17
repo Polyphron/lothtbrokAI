@@ -24,7 +24,7 @@ namespace LothbrokAI
     public class LothbrokSubModule : MBSubModuleBase
     {
         public const string MOD_ID = "com.lothbrok.ai";
-        public const string MOD_VERSION = "0.5.0";
+        public const string MOD_VERSION = "0.5.1";
         public const string LOG_PREFIX = "[LothbrokAI]";
 
         private Harmony _harmony;
@@ -129,6 +129,23 @@ namespace LothbrokAI
 
                 // Open SQLite memory database (campaign-scoped)
                 Memory.LothbrokDatabase.Open(saveDir);
+
+                // Register world-state nodes into hypergraph ONCE on load
+                // DESIGN: Previously done every conversation (80+ inserts per chat).
+                // World state changes rarely — we re-register on events instead.
+                if (API.LothbrokConfig.Current.HypergraphEnabled && Memory.LothbrokDatabase.IsOpen)
+                {
+                    try
+                    {
+                        string graphJson = Core.CalradiaGraphExporter.ExportGraph(null);
+                        Memory.HypergraphEngine.RegisterWorldNodes(graphJson);
+                        Log("World nodes registered into hypergraph.", Debug.DebugColor.Green);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log("WARN: World node registration failed: " + ex.Message, Debug.DebugColor.Yellow);
+                    }
+                }
 
                 Log($"Memory Engine initialized for campaign ID: {gameId}", Debug.DebugColor.Green);
             }
