@@ -137,6 +137,12 @@ namespace LothbrokAI.Memory
         public string Summary { get; set; }
         public List<string> RelevantMemories { get; set; }
         public List<string> RecentMessages { get; set; }
+        /// <summary>
+        /// Activated hyperedge context chains from the hypergraph engine.
+        /// Injected as [CONTEXT CHAINS] prompt section.
+        /// Empty when hypergraph is disabled or no edges fired.
+        /// </summary>
+        public List<string> ContextChains { get; set; } = new List<string>();
         public NpcMetadata Metadata { get; set; }
         public string Personality { get; set; }
         public string Backstory { get; set; }
@@ -192,15 +198,44 @@ namespace LothbrokAI.Memory
                 recent.Add(prefix + ": " + entry.Text);
             }
 
-            // Retrieve relevant memories via TF-IDF (Phase 1)
             int topK = API.LothbrokConfig.Current.MemoryTopK;
-            var relevant = RetrieveTfIdf(mem, playerMessage, topK);
+            int currentGameDay = TaleWorlds.CampaignSystem.Campaign.Current != null
+                ? (int)TaleWorlds.CampaignSystem.CampaignTime.Now.ToDays
+                : 0;
+
+            List<string> relevant;
+
+            // DESIGN: Prefer semantic search when vectors available, fall back to TF-IDF.
+            // The first few conversations will have no vectors yet (embedding API cold start).
+            // TF-IDF ensures players always get some memory retrieval even on first run.
+            float[] queryVec = API.APIRouter.GetEmbedding(playerMessage);
+            if (queryVec != null && LothbrokDatabase.IsOpen)
+            {
+                relevant = VectorIndex.Search(queryVec, npcId, currentGameDay, topK);
+
+                // If semantic search returned nothing, fall back
+                if (relevant.Count == 0)
+                    relevant = RetrieveTfIdf(mem, playerMessage, topK);
+            }
+            else
+            {
+                relevant = RetrieveTfIdf(mem, playerMessage, topK);
+            }
+
+            // Spreading activation: which hyperedges does the current message trigger?
+            List<string> contextChains = new List<string>();
+            if (API.LothbrokConfig.Current.HypergraphEnabled && LothbrokDatabase.IsOpen)
+            {
+                var messageTags = ExtractTags(playerMessage);
+                contextChains = HypergraphEngine.GetActivatedContextChains(npcId, messageTags);
+            }
 
             return new MemoryPayload
             {
                 Summary = mem.Summary != null ? mem.Summary.Text : null,
                 RelevantMemories = relevant,
                 RecentMessages = recent,
+                ContextChains = contextChains,
                 Metadata = mem.Metadata,
                 Personality = mem.Personality,
                 Backstory = mem.Backstory,
@@ -253,7 +288,7 @@ namespace LothbrokAI.Memory
                     CreatedAt = timestamp
                 };
 
-                // Phase 2: Try to get embedding
+                // Semantic embedding — stored in JSON for compat, also upserted to SQLite index
                 float[] embedding = API.APIRouter.GetEmbedding(combined);
                 if (embedding != null)
                 {
@@ -262,7 +297,7 @@ namespace LothbrokAI.Memory
 
                 mem.Memories.Add(node);
 
-                // Prune if over limit
+                // Prune JSON store if over limit (SQLite has no per-NPC cap)
                 int maxMemories = API.LothbrokConfig.Current.MaxEmbeddingsPerNpc;
                 if (mem.Memories.Count > maxMemories)
                 {
@@ -279,6 +314,28 @@ namespace LothbrokAI.Memory
                 if (mem.ConversationLog.Count - summarizedCount >= triggerCount)
                 {
                     RegenerateExtractSummary(mem);
+                }
+            }
+
+            // Upsert to SQLite vector index (outside lock — no shared state)
+            if (LothbrokDatabase.IsOpen)
+            {
+                string memId = npcId + "_" + timestamp.GetHashCode().ToString("X8");
+                int currentDay = TaleWorlds.CampaignSystem.Campaign.Current != null
+                    ? (int)TaleWorlds.CampaignSystem.CampaignTime.Now.ToDays
+                    : 0;
+                string combined2 = "Player: " + playerMessage + " | " + npcName + ": " + npcResponse;
+                var tagsForIndex = tags ?? ExtractTags(combined2);
+
+                VectorIndex.Upsert(memId, npcId, npcName, combined2,
+                    _cache.TryGetValue(npcId, out var m) ? m.Memories.LastOrDefault()?.Vector : null,
+                    tagsForIndex, currentDay);
+
+                // Feed the hypergraph
+                if (API.LothbrokConfig.Current.HypergraphEnabled)
+                {
+                    string playerNpcId = TaleWorlds.CampaignSystem.Hero.MainHero?.StringId ?? "player";
+                    HypergraphEngine.OnExchangeStored(npcId, npcName, playerNpcId, tagsForIndex);
                 }
             }
 

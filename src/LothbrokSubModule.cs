@@ -24,7 +24,7 @@ namespace LothbrokAI
     public class LothbrokSubModule : MBSubModuleBase
     {
         public const string MOD_ID = "com.lothbrok.ai";
-        public const string MOD_VERSION = "0.1.0";
+        public const string MOD_VERSION = "0.5.0";
         public const string LOG_PREFIX = "[LothbrokAI]";
 
         private Harmony _harmony;
@@ -126,6 +126,10 @@ namespace LothbrokAI
                 
                 string saveDir = System.IO.Path.Combine(_modDir, "save_data", gameId);
                 Memory.MemoryEngine.Initialize(saveDir);
+
+                // Open SQLite memory database (campaign-scoped)
+                Memory.LothbrokDatabase.Open(saveDir);
+
                 Log($"Memory Engine initialized for campaign ID: {gameId}", Debug.DebugColor.Green);
             }
         }
@@ -134,6 +138,10 @@ namespace LothbrokAI
         {
             // Flush all NPC memory files before unloading
             Memory.MemoryEngine.FlushAll();
+
+            // Close SQLite database cleanly
+            Memory.LothbrokDatabase.Close();
+
             _harmony?.UnpatchAll(MOD_ID);
             
             // Kill the REST API Server

@@ -34,11 +34,20 @@ namespace LothbrokAI.Core
             string npcName = npc.Name.ToString();
             string playerName = player.Name.ToString();
 
-            // Retrieve memory for this NPC
+            // Retrieve memory for this NPC (includes semantic search + hypergraph activation)
             var memory = MemoryEngine.Retrieve(npcId, npcName, playerMessage);
 
             // Build world context
             string worldContext = BuildWorldContext(npc, player);
+
+            // Register world-state nodes into the hypergraph (kingdoms, clans)
+            // DESIGN: Done once per conversation start so world nodes can participate
+            // in concept spreading even if never explicitly mentioned in dialogue.
+            if (LothbrokConfig.Current.HypergraphEnabled && LothbrokDatabase.IsOpen)
+            {
+                string graphJson = CalradiaGraphExporter.ExportGraph(null);
+                HypergraphEngine.RegisterWorldNodes(graphJson);
+            }
 
             // Build relationship description
             string relationship = BuildRelationshipContext(npc, player, memory.Metadata);
@@ -56,6 +65,7 @@ namespace LothbrokAI.Core
                 memorySummary: memory.Summary,
                 retrievedMemories: memory.RelevantMemories,
                 recentMessages: memory.RecentMessages,
+                contextChains: memory.ContextChains,
                 worldContext: worldContext,
                 rpItems: rpItems,
                 playerName: playerName,

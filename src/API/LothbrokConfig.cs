@@ -107,6 +107,51 @@ namespace LothbrokAI.API
         public int MaxEmbeddingsPerNpc { get; set; } = 500;
 
         // ================================================================
+        // HYPERGRAPH MEMORY SETTINGS (v2)
+        // ================================================================
+
+        /// <summary>
+        /// Enable hypergraph context engine. Conversations build a persistent
+        /// concept graph that captures emergent context patterns across NPCs.
+        /// </summary>
+        [JsonProperty("hypergraph_enabled")]
+        public bool HypergraphEnabled { get; set; } = true;
+
+        /// <summary>
+        /// Enable cross-NPC semantic retrieval. Memories from all NPCs are
+        /// searchable during any conversation. Enables emergent connections
+        /// (e.g., NPC B references behavior patterns from your NPC A conversations).
+        /// </summary>
+        [JsonProperty("cross_npc_retrieval")]
+        public bool CrossNpcRetrieval { get; set; } = true;
+
+        /// <summary>
+        /// Minimum co-occurrence count before a hyperedge is considered
+        /// significant enough to influence retrieval scoring.
+        /// </summary>
+        [JsonProperty("hyperedge_min_activations")]
+        public int HyperedgeMinActivations { get; set; } = 2;
+
+        /// <summary>
+        /// Max hyperedges to inject as context chains into the prompt.
+        /// Each activated edge adds ~15-25 tokens.
+        /// </summary>
+        [JsonProperty("max_context_chains")]
+        public int MaxContextChains { get; set; } = 4;
+
+        /// <summary>
+        /// Semantic retrieval score weights. Must sum to 1.0.
+        /// </summary>
+        [JsonProperty("semantic_weight")]
+        public float SemanticWeight { get; set; } = 0.7f;
+
+        [JsonProperty("recency_weight")]
+        public float RecencyWeight { get; set; } = 0.2f;
+
+        [JsonProperty("same_npc_weight")]
+        public float SameNpcWeight { get; set; } = 0.1f;
+
+        // ================================================================
         // DEBUG SETTINGS
         // ================================================================
 

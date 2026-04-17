@@ -35,7 +35,8 @@ namespace LothbrokAI.Core
         private const int BUDGET_PERSONALITY = 400;      // NPC personality + backstory
         private const int BUDGET_RELATIONSHIP = 200;     // Trust, romance, faction
         private const int BUDGET_MEMORY_SUMMARY = 300;   // Compressed history
-        private const int BUDGET_MEMORY_RETRIEVED = 600; // Top-K relevant memories
+        private const int BUDGET_MEMORY_RETRIEVED = 200; // Top-K semantic memories (v2)
+        private const int BUDGET_CONTEXT_CHAINS = 100;   // Hypergraph activated edges
         private const int BUDGET_RECENT = 400;           // Last N raw messages
         private const int BUDGET_WORLD = 400;            // Location, events, diplomacy
         private const int BUDGET_ITEMS = 100;            // RP items in inventory
@@ -90,6 +91,7 @@ namespace LothbrokAI.Core
             string memorySummary,
             List<string> retrievedMemories,
             List<string> recentMessages,
+            List<string> contextChains,
             string worldContext,
             string rpItems,
             string playerName,
@@ -147,7 +149,7 @@ namespace LothbrokAI.Core
                 tokensUsed += TokenEstimator.Estimate(summary);
             }
 
-            // 5. Retrieved relevant memories
+            // 5. Retrieved relevant memories (semantic search, budget reduced vs TF-IDF era)
             if (retrievedMemories != null && retrievedMemories.Count > 0)
             {
                 sb.AppendLine("[RELEVANT PAST EXCHANGES]");
@@ -159,6 +161,25 @@ namespace LothbrokAI.Core
                     sb.AppendLine("- " + mem);
                     memBudget -= memTokens;
                     tokensUsed += memTokens;
+                }
+                sb.AppendLine();
+            }
+
+            // 5b. Hypergraph context chains — emergent cross-NPC context patterns
+            // DESIGN: Only injected when chains have been activated (co-occurrence threshold met).
+            // The LLM is NOT told how these were derived — it just sees relevant context.
+            if (contextChains != null && contextChains.Count > 0)
+            {
+                sb.AppendLine("[BEHAVIORAL CONTEXT PATTERNS]");
+                sb.AppendLine("Patterns observed about this player across conversations:");
+                int chainBudget = BUDGET_CONTEXT_CHAINS;
+                foreach (string chain in contextChains)
+                {
+                    int chainTokens = TokenEstimator.Estimate(chain);
+                    if (chainTokens > chainBudget) break;
+                    sb.AppendLine("- " + chain);
+                    chainBudget -= chainTokens;
+                    tokensUsed += chainTokens;
                 }
                 sb.AppendLine();
             }

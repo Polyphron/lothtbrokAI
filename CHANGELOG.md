@@ -5,6 +5,23 @@ All notable changes to LothbrokAI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-17
+
+### Added
+- **SQLite Memory Database**: Campaign-scoped SQLite database (`lothbrok_memory.db`) now persists all NPC memory vectors for semantic search. Opened on campaign load, closed cleanly on unload.
+- **Semantic Vector Search** (`VectorIndex.cs`): Replaced TF-IDF bag-of-words retrieval with cosine similarity search across all stored memory vectors. Hybrid scoring: `semantic (0.7) + recency (0.2) + same-NPC bonus (0.1)`. Falls back to TF-IDF when no vectors available (e.g., embedding API not configured).
+- **Hypergraph Context Engine** (`HypergraphEngine.cs`): N-ary co-occurrence hyperedges capture emergent context patterns across NPCs. When a conversation activates 2+ shared nodes from a prior edge, that edge fires a `[BEHAVIORAL CONTEXT PATTERNS]` hint into the prompt — enabling NPCs to connect player behavior across different conversations without being explicitly told.
+- **Cross-NPC Retrieval**: Global memory index allows any NPC to surface memories from any other NPC conversation (configurable). Enables emergent connections: you bribed Dermot → Siaramus asks about gold.
+- **World Node Registration**: Kingdom and Clan nodes from `CalradiaGraphExporter` are registered into the hypergraph each conversation, allowing world-state nodes to participate in concept spreading.
+
+### Changed
+- **Memory token budget**: `BUDGET_MEMORY_RETRIEVED` reduced from 600 → 200 tokens. Semantic retrieval is higher quality — fewer but more relevant memories, lower total prompt cost.
+- **New `[BEHAVIORAL CONTEXT PATTERNS]` prompt section**: Injected between retrieved memories and world context. Max 100 tokens. Only appears when hyperedges meet the co-occurrence threshold.
+- **Mod version**: Bumped to `0.5.0`.
+
+### Architecture
+- LothbrokAI is intentionally a public proof-of-concept for smart memory + context engineering. The hypergraph/semantic hybrid demonstrates what is possible at mod-scale without proprietary ML infrastructure.
+
 ## [0.4.2] - 2026-04-17
 
 ### Added
